@@ -8,6 +8,7 @@ use yii\base\Action;
 use Yii;
 use yii\di\Instance;
 use yii\web\BadRequestHttpException;
+use yii\web\Response;
 
 class CaptchaAction extends Action
 {
@@ -87,19 +88,21 @@ class CaptchaAction extends Action
         $this->setMobile($mobile);
         $session = Yii::$app->getSession();
         $session->open();
-        $name = $this->getSessionKey().'countdown';
+        $name = $this->getSessionKey() . 'countdown';
         $time = time();
-        $countdown = $session[$name];
-        if ($countdown < $time) {
+        $isSend = false;
+        $countdown = $session[$name] ?: $time;
+        if ($countdown <= $time) {
             $code = $this->getVerifyCode($mobile, true);
             $content = strtr($this->content, ['{code}' => $code]);
             $this->smses->send($mobile, $content);
-            $countdown = $this->countdown;
-            $session[$name] = $time + $countdown;
+            $isSend = true;
         }
+        Yii::$app->response->format = Response::FORMAT_JSON;
 
-       return [
-            'countdown' => $countdown,
+        return [
+            'is_send' => $isSend,
+            'countdown' => $countdown - $time,
         ];
     }
 
@@ -123,6 +126,7 @@ class CaptchaAction extends Action
         if ($session[$name] === null || $regenerate) {
             $session[$name] = $this->generateVerifyCode();
             $session[$name . 'count'] = 1;
+            $session[$name . 'countdown'] = time() + $this->countdown;
         }
 
         return $session[$name];
@@ -251,7 +255,7 @@ class CaptchaAction extends Action
     protected function setMobile($mobile)
     {
         if (!preg_match($this->pattern, $mobile)) {
-            throw new BadRequestHttpException(Yii::t('yii', 'Invalid data received for parameter "{param}".', ['param' => $mobile]));
+            throw new BadRequestHttpException(Yii::t('yii', 'Invalid data received for parameter "{param}".', ['param' => 'mobile']));
         }
         $this->mobile = $mobile;
     }
