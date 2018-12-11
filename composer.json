@@ -1,9 +1,8 @@
 {
   "name": "choate/yii2-sms-captcha",
-  "type": "project",
+  "type": "library",
   "description": "Yii2 SMS Captcha",
   "require": {
-    "choate/smses": "^1.0",
     "yiisoft/yii2": "^2.0"
   },
   "license": "BSD-3-Clause",

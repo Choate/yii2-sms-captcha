@@ -3,10 +3,13 @@
 
 namespace choate\yii2\smscaptcha;
 
-use choate\smses\Connection;
 use yii\base\Action;
 use Yii;
+use yii\base\Model;
+use yii\caching\Cache;
 use yii\di\Instance;
+use yii\helpers\ArrayHelper;
+use yii\helpers\Json;
 use yii\web\BadRequestHttpException;
 use yii\web\Response;
 
@@ -17,9 +20,9 @@ class CaptchaAction extends Action
     const STYLE_ALPHA = 'alpha';
 
     /**
-     * @var \choate\smses\Connection
+     * @var SenderInterface
      */
-    public $smses = 'smses';
+    public $sender = 'sender';
 
     /**
      * @var int how many times should the same CAPTCHA be displayed. Defaults to 3.
@@ -67,13 +70,34 @@ class CaptchaAction extends Action
     public $pattern = '#^1\d{10}$#';
 
     /**
+     * @var Cache
+     */
+    public $cache = 'cache';
+
+    /**
+     * @var int 过期时间
+     */
+    public $expired = 1800;
+
+    /**
+     * @var 过滤器
+     */
+    public $filter;
+
+    /**
      * @var string
      */
-    private $mobile;
+    public $mobile;
+
+    /**
+     * @var Storage
+     */
+    protected $storage;
 
     public function init()
     {
-        $this->smses = Instance::ensure($this->smses, Connection::class);
+        $this->sender = Instance::ensure($this->sender, SenderInterface::class);
+        $this->cache = Instance::ensure($this->cache, Cache::class);
     }
 
 
@@ -83,22 +107,31 @@ class CaptchaAction extends Action
      * @throws BadRequestHttpException
      * @throws \choate\smses\Exception
      */
-    public function run($mobile)
+    public function run()
     {
+        $request = Yii::$app->getRequest();
+        $response = Yii::$app->getResponse();
+        $response->format = Response::FORMAT_JSON;
+
+        if (($result = $this->filter()) !== true) {
+            return $result;
+        }
+
+        $mobile = $this->mobile ?: $request->post('mobile');
         $this->setMobile($mobile);
-        $session = Yii::$app->getSession();
-        $session->open();
-        $name = $this->getSessionKey() . 'countdown';
+        $storage = $this->getStorage();
         $time = time();
         $isSend = false;
-        $countdown = $session[$name] ?: $time;
+        $countdown = $storage->getCountdown() ?: $time;
         if ($countdown <= $time) {
             $code = $this->getVerifyCode($mobile, true);
             $content = strtr($this->content, ['{code}' => $code]);
-            $this->smses->send($mobile, $content);
+            $this->sender->send($mobile, $content);
+            $countdown = $time + $this->countdown;
+            $storage->setCountdown($countdown);
+            $storage->save(null);
             $isSend = true;
         }
-        Yii::$app->response->format = Response::FORMAT_JSON;
 
         return [
             'is_send' => $isSend,
@@ -120,16 +153,14 @@ class CaptchaAction extends Action
         }
 
         $this->setMobile($mobile);
-        $session = Yii::$app->getSession();
-        $session->open();
-        $name = $this->getSessionKey();
-        if ($session[$name] === null || $regenerate) {
-            $session[$name] = $this->generateVerifyCode();
-            $session[$name . 'count'] = 1;
-            $session[$name . 'countdown'] = time() + $this->countdown;
+        $storage = $this->getStorage();
+        if ($storage->getCode() === null || $regenerate) {
+            $storage->setCode($this->generateVerifyCode());
+            $storage->setCount(1);
+            $storage->save($this->expired);
         }
 
-        return $session[$name];
+        return $storage->getCode();
     }
 
     /**
@@ -142,14 +173,14 @@ class CaptchaAction extends Action
     public function validate($mobile, $input, $caseSensitive)
     {
         $this->setMobile($mobile);
+        $storage = $this->getStorage();
+        $storage->increaseCount(1);
         $code = $this->getVerifyCode($mobile);
         $valid = $caseSensitive ? ($input === $code) : strcasecmp($input, $code) === 0;
-        $session = Yii::$app->getSession();
-        $session->open();
-        $name = $this->getSessionKey() . 'count';
-        $session[$name] = $session[$name] + 1;
-        if ($valid || $session[$name] > $this->testLimit && $this->testLimit > 0) {
-            $this->getVerifyCode($mobile, true);
+        if ($valid || $storage->getCount() > $this->testLimit && $this->testLimit > 0) {
+            $storage->destruct();
+        } else {
+            $storage->save(null);
         }
 
         return $valid;
@@ -266,5 +297,48 @@ class CaptchaAction extends Action
     protected function getMobile()
     {
         return $this->mobile;
+    }
+
+    /**
+     * @return Storage
+     */
+    protected function getStorage()
+    {
+        if (empty($this->storage)) {
+            $this->storage = Storage::load($this->cache, $this->getSessionKey());
+        }
+
+        return $this->storage;
+    }
+
+    protected function filter()
+    {
+        $response = Yii::$app->getResponse();
+        $filter = $this->filter;
+        $valid = true;
+        if ($filter instanceof Model) {
+            $filter->load($_POST, '');
+            $valid = $filter->validate();
+            if (!$valid) {
+                $result = [];
+                foreach ($filter->getFirstErrors() as $name => $message) {
+                    $result[] = [
+                        'field' => $name,
+                        'message' => $message,
+                    ];
+                }
+            }
+        } elseif ($filter instanceof \Closure) {
+            $result = call_user_func($this->filter);
+            $valid = $result === true;
+        }
+
+        if ($valid) {
+            return true;
+        } else {
+            $response->setStatusCode(422, 'Data Validation Failed.');
+
+            return $result;
+        }
     }
 }
