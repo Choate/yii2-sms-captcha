@@ -56,7 +56,7 @@ class Storage extends Component implements \JsonSerializable
     public function destruct()
     {
         $cache = $this->cache;
-        $cache->delete($cache);
+        $cache->delete($this->name);
     }
 
 

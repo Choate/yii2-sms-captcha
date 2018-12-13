@@ -154,7 +154,7 @@ class CaptchaAction extends Action
 
         $this->setMobile($mobile);
         $storage = $this->getStorage();
-        if ($storage->getCode() === null || $regenerate) {
+        if ($regenerate) {
             $storage->setCode($this->generateVerifyCode());
             $storage->setCount(1);
             $storage->save($this->expired);
